@@ -6,7 +6,7 @@ import urllib2
 @commands('request')
 def request(bot, trigger):
     """Request Bot"""
-    bot.say('debug: ' + trigger.group(2))
+#    bot.say('debug: ' + trigger.group(2))
     song = urllib.urlencode({'name': 'IRC User: ' + trigger.nick, 'type': 'Song Request', 'request': trigger.group(2), 'submit': 'Request'})
     opener = urllib2.build_opener(urllib2.HTTPHandler)
     request = urllib2.Request('http://djweb.eurotruckradio.com/request.php', data=song)
