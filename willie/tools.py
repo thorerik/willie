@@ -23,6 +23,8 @@ import sys
 import os
 import re
 import threading
+import warnings
+
 try:
     import pytz
 except:
@@ -36,6 +38,7 @@ from collections import defaultdict
 import copy
 import ast
 import operator
+import codecs
 if sys.version_info.major >= 3:
     unicode = str
     iteritems = dict.items
@@ -202,6 +205,7 @@ class EquationEvaluator(ExpressionEvaluator):
         ast.Pow: guarded_pow,
         ast.Mod: operator.mod,
         ast.FloorDiv: operator.floordiv,
+        ast.BitXor: guarded_pow
     }
     __unary_ops = {
         ast.USub: operator.neg,
@@ -333,37 +337,36 @@ class Ddict(dict):
         return dict.__getitem__(self, key)
 
 
-class Nick(unicode):
+class Identifier(unicode):
     """A `unicode` subclass which acts appropriately for IRC identifiers.
 
     When used as normal `unicode` objects, case will be preserved.
-    However, when comparing two Nick objects, or comparing a Nick object with a
-    `unicode` object, the comparison will be case insensitive. This case
-    insensitivity includes the case convention conventions regarding ``[]``,
-    ``{}``, ``|``, ``\\``, ``^`` and ``~`` described in RFC 2812.
-
+    However, when comparing two Identifier objects, or comparing a Identifier
+    object with a `unicode` object, the comparison will be case insensitive.
+    This case insensitivity includes the case convention conventions regarding
+    ``[]``, ``{}``, ``|``, ``\\``, ``^`` and ``~`` described in RFC 2812.
     """
 
-    def __new__(cls, nick):
-        # According to RFC2812, nicks have to be in the ASCII range. However,
-        # I think it's best to let the IRCd determine that, and we'll just
-        # assume unicode. It won't hurt anything, and is more internally
+    def __new__(cls, identifier):
+        # According to RFC2812, identifiers have to be in the ASCII range.
+        # However, I think it's best to let the IRCd determine that, and we'll
+        # just assume unicode. It won't hurt anything, and is more internally
         # consistent. And who knows, maybe there's another use case for this
         # weird case convention.
-        s = unicode.__new__(cls, nick)
-        s._lowered = Nick._lower(nick)
+        s = unicode.__new__(cls, identifier)
+        s._lowered = Identifier._lower(identifier)
         return s
 
     def lower(self):
-        """Return `nick`, converted to lower-case per RFC 2812."""
+        """Return the identifier converted to lower-case per RFC 2812."""
         return self._lowered
 
     @staticmethod
-    def _lower(nick):
-        """Returns `nick` in lower case per RFC 2812."""
-        # The tilde replacement isn't needed for nicks, but is for channels,
-        # which may be useful at some point in the future.
-        low = nick.lower().replace('{', '[').replace('}', ']')
+    def _lower(identifier):
+        """Returns `identifier` in lower case per RFC 2812."""
+        # The tilde replacement isn't needed for identifiers, but is for
+        # channels, which may be useful at some point in the future.
+        low = identifier.lower().replace('{', '[').replace('}', ']')
         low = low.replace('|', '\\').replace('^', '~')
         return low
 
@@ -377,29 +380,29 @@ class Nick(unicode):
         return self._lowered.__hash__()
 
     def __lt__(self, other):
-        if isinstance(other, Nick):
+        if isinstance(other, Identifier):
             return self._lowered < other._lowered
-        return self._lowered < Nick._lower(other)
+        return self._lowered < Identifier._lower(other)
 
     def __le__(self, other):
-        if isinstance(other, Nick):
+        if isinstance(other, Identifier):
             return self._lowered <= other._lowered
-        return self._lowered <= Nick._lower(other)
+        return self._lowered <= Identifier._lower(other)
 
     def __gt__(self, other):
-        if isinstance(other, Nick):
+        if isinstance(other, Identifier):
             return self._lowered > other._lowered
-        return self._lowered > Nick._lower(other)
+        return self._lowered > Identifier._lower(other)
 
     def __ge__(self, other):
-        if isinstance(other, Nick):
+        if isinstance(other, Identifier):
             return self._lowered >= other._lowered
-        return self._lowered >= Nick._lower(other)
+        return self._lowered >= Identifier._lower(other)
 
     def __eq__(self, other):
-        if isinstance(other, Nick):
+        if isinstance(other, Identifier):
             return self._lowered == other._lowered
-        return self._lowered == Nick._lower(other)
+        return self._lowered == Identifier._lower(other)
 
     def __ne__(self, other):
         return not (self == other)
@@ -443,9 +446,20 @@ class OutputRedirect:
                     sys.__stdout__.write(string)
             except:
                 pass
-        logfile = open(self.logpath, 'a')
-        logfile.write(string)
-        logfile.close()
+
+        with codecs.open(self.logpath, 'ab', encoding="utf8",
+                         errors='xmlcharrefreplace') as logfile:
+            try:
+                logfile.write(string)
+            except UnicodeDecodeError:
+                # we got an invalid string, safely encode it to utf-8
+                logfile.write(unicode(string, 'utf8', errors="replace"))
+
+    def flush(self):
+        if self.stderr:
+            sys.__stderr__.flush()
+        else:
+            sys.__stdout__.flush()
 
 
 #These seems to trace back to when we thought we needed a try/except on prints,
@@ -486,9 +500,10 @@ def get_timezone(db=None, config=None, zone=None, nick=None, channel=None):
 
     Time zone is pulled in the following priority:
     1. `zone`, if it is valid
-    2. The timezone for `zone` in `db` if one is set and valid.
-    3. The timezone for `nick` in `db`, if one is set and valid.
-    4. The timezone for `channel` in `db`, if one is set and valid.
+    2. The timezone for the channel or nick `zone` in `db` if one is set and
+       valid.
+    3. The timezone for the nick `nick` in `db`, if one is set and valid.
+    4. The timezone for the channel  `channel` in `db`, if one is set and valid.
     5. The default timezone in `config`, if one is set and valid.
 
     If `db` is not given, or given but not set up, steps 2 and 3 will be
@@ -524,12 +539,12 @@ def get_timezone(db=None, config=None, zone=None, nick=None, channel=None):
 
     if zone:
         tz = check(zone)
-        if not tz and zone in db.preferences:
-            tz = check(db.preferences.get(zone, 'tz'))
-    if not tz and nick and nick in db.preferences:
-        tz = check(db.preferences.get(nick, 'tz'))
-    if not tz and channel and channel in db.preferences:
-        tz = check(db.preferences.get(channel, 'tz'))
+        if not tz:
+            tz = check(db.get_nick_or_channel_value(zone, 'timezone'))
+    if not tz and nick:
+        tz = check(db.get_nick_value(nick, 'timezone'))
+    if not tz and channel:
+        tz = check(db.get_channel_value(channel, 'timezone'))
     if not tz and config and config.has_option('core', 'default_timezone'):
         tz = check(config.core.default_timezone)
     return tz
@@ -548,8 +563,8 @@ def format_time(db=None, config=None, zone=None, nick=None, channel=None,
 
     The format for the string is chosen in the following order:
 
-    1. The format for `nick` in `db`, if one is set and valid.
-    2. The format for `channel` in `db`, if one is set and valid.
+    1. The format for the nick `nick` in `db`, if one is set and valid.
+    2. The format for the channel `channel` in `db`, if one is set and valid.
     3. The default format in `config`, if one is set and valid.
     4. ISO-8601
 
@@ -557,10 +572,10 @@ def format_time(db=None, config=None, zone=None, nick=None, channel=None,
     is not given, step 3 will be skipped."""
     tformat = None
     if db:
-        if nick and nick in db.preferences:
-            tformat = db.preferences.get(nick, 'time_format')
-        if not tformat and channel in db.preferences:
-            tformat = db.preferences.get(channel, 'time_format')
+        if nick:
+            tformat = db.get_nick_value(nick, 'time_format')
+        if not tformat and channel:
+            tformat = db.get_channel_value(channel, 'time_format')
     if not tformat and config and config.has_option('core',
                                                     'default_time_format'):
         tformat = config.core.default_time_format

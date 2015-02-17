@@ -10,7 +10,7 @@ http://willie.dfbta.net
 
 This module will respond to .yt and .youtube commands and searches the youtubes.
 """
-from __future__ import unicode_literals
+from __future__ import unicode_literals, division
 
 from willie import web, tools
 from willie.module import rule, commands, example
@@ -84,8 +84,8 @@ def ytget(bot, trigger, uri):
         if duration < 1:
             vid_info['length'] = 'LIVE'
         else:
-            hours = duration / (60 * 60)
-            minutes = duration / 60 - (hours * 60)
+            hours = duration // (60 * 60)
+            minutes = duration // 60 - (hours * 60)
             seconds = duration % 60
             vid_info['length'] = ''
             if hours:

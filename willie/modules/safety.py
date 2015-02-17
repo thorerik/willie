@@ -11,8 +11,9 @@ from __future__ import print_function
 import willie.web as web
 from willie.config import ConfigurationError
 from willie.formatting import color, bold
+from willie.logger import get_logger
+from willie.module import commands, interval, priority, rule, OP
 import willie.tools
-import willie.module
 import sys
 import json
 import time
@@ -26,6 +27,8 @@ if sys.version_info.major > 2:
 else:
     from urllib import urlretrieve
     from urlparse import urlparse
+
+LOGGER = get_logger(__name__)
 
 vt_base_api_url = 'https://www.virustotal.com/vtapi/v2/url/'
 malware_domains = []
@@ -50,8 +53,6 @@ def configure(config):
 def setup(bot):
     if not bot.config.has_section('safety'):
         raise ConfigurationError("Safety module not configured")
-    if bot.db and not bot.db.preferences.has_columns('safety'):
-        bot.db.preferences.add_columns(['safety'])
     bot.memory['safety_cache'] = willie.tools.WillieMemory()
     for item in bot.config.safety.get_list('known_good'):
         known_good.append(re.compile(item, re.I))
@@ -90,8 +91,8 @@ def url_handler(bot, trigger):
         else:
             check = bool(check)
     # DB overrides config:
-    if bot.db and trigger.sender.lower() in bot.db.preferences:
-        setting = bot.db.preferences.get(trigger.sender.lower(), 'safety')
+    setting = bot.db.get_channel_value(trigger.sender, 'safety')
+    if setting is not None:
         if setting == 'off':
             return  # Not checking
         elif setting in ['on', 'strict', 'local', 'local strict']:
@@ -133,7 +134,7 @@ def url_handler(bot, trigger):
             positives = result['positives']
             total = result['total']
     except Exception as e:
-        bot.debug('[safety]', e, 'debug')
+        LOGGER.debug('Error from checking URL with VT.', exc_info=True)
         pass  # Ignoring exceptions with VT so MalwareDomains will always work
 
     if unicode(netloc).lower() in malware_domains:
@@ -156,20 +157,18 @@ def url_handler(bot, trigger):
 @willie.module.commands('safety')
 def toggle_safety(bot, trigger):
     """ Set safety setting for channel """
+    if not trigger.admin and bot.privileges[trigger.sender][trigger.nick] < OP:
+        bot.reply('Only channel operators can change safety settings')
+        return
     allowed_states = ['strict', 'on', 'off', 'local', 'local strict']
     if not trigger.group(2) or trigger.group(2).lower() not in allowed_states:
         options = ' / '.join(allowed_states)
         bot.reply('Available options: %s' % options)
         return
-    if not bot.db:
-        bot.reply('No database configured, can\'t modify settings')
-        return
-    if not trigger.isop and not trigger.admin:
-        bot.reply('Only channel operators can change safety settings')
 
     channel = trigger.sender.lower()
-    bot.db.preferences.update(channel, {'safety': trigger.group(2).lower()})
-    bot.reply('Safety is now set to %s in this channel' % trigger.group(2))
+    bot.db.set_channel_value(channel, 'safety', trigger.group(2).lower())
+    bot.reply('Safety is now set to "%s" on this channel' % trigger.group(2))
 
 
 # Clean the cache every day, also when > 1024 entries

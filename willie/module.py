@@ -4,7 +4,6 @@
 It defines the following decorators for defining willie callables:
 willie.module.rule
 willie.module.thread
-willie.module.name (deprecated)
 willie.module.commands
 willie.module.nickname_commands
 willie.module.priority
@@ -100,22 +99,12 @@ def rule(value):
     Inside the regular expression, some special directives can be used. $nick
     will be replaced with the nick of the bot and , or :, and $nickname will be
     replaced with the nick of the bot.
-
-    Prior to 3.1, rules could also be made one of three formats of tuple. The
-    values would be joined together to form a singular regular expression.
-    However, these kinds of rules add no functionality over simple regular
-    expressions, and are considered deprecated in 3.1.
-
     """
     def add_attribute(function):
         if not hasattr(function, "rule"):
             function.rule = []
         function.rule.append(value)
         return function
-
-    if isinstance(value, tuple):
-        raise DeprecationWarning("Tuple-form .rule is deprecated in 3.1."
-                                 " Replace tuple-form .rule with a regexp.")
 
     return add_attribute
 
@@ -132,16 +121,6 @@ def thread(value):
         function.thread = value
         return function
     return add_attribute
-
-
-def name(value):
-    """Decorator. Equivalent to func.name = value.
-
-    This attribute is considered deprecated in 3.1.
-
-    """
-    raise DeprecationWarning("This attribute is considered deprecated in 3.1."
-                             " Replace tuple-form .rule with a regexp.")
 
 
 def commands(*command_list):
@@ -279,25 +258,114 @@ def rate(value):
     return add_attribute
 
 
-def require_privmsg(function):
+def require_privmsg(message=None):
     """
     Decorator, this allows functions to specify if they should be only
     allowed via private message.
+
+    If it is not, `message` will be said if given.
     """
-    @functools.wraps(function)
-    def _nop(*args, **kwargs):
-        # Assign trigger and bot for easy access later
-        bot, trigger = args[0:2]
-        if trigger.is_privmsg:
-            return function(*args, **kwargs)
-        bot.reply('This command can only be executed via PM \
-                  (Private Message)')
-        return
-    return _nop
+    def actual_decorator(function):
+        @functools.wraps(function)
+        def _nop(*args, **kwargs):
+            # Assign trigger and bot for easy access later
+            bot, trigger = args[0:2]
+            if trigger.is_privmsg:
+                return function(*args, **kwargs)
+            else:
+                if message:
+                    bot.say(message)
+        return _nop
+    # Hack to allow decorator without parens
+    if callable(message):
+        return actual_decorator(message)
+    return actual_decorator
+
+
+def require_chanmsg(message=None):
+    """
+    Decorator, this allows functions to specify if they should be only
+    allowed via channel message.
+
+    If it is not, `message` will be said if given.
+    """
+    def actual_decorator(function):
+        @functools.wraps(function)
+        def _nop(*args, **kwargs):
+            # Assign trigger and bot for easy access later
+            bot, trigger = args[0:2]
+            if trigger.is_privmsg:
+                return function(*args, **kwargs)
+            else:
+                if message:
+                    bot.say(message)
+        return _nop
+    # Hack to allow decorator without parens
+    if callable(message):
+        return actual_decorator(message)
+    return actual_decorator
+
+
+def require_privilege(level, message=None):
+    """Decorator. Require at lesat the given channel privilege level to execute
+    the function.
+
+    `level` can be one of the privilege levels defined in this module. If the
+    user does not have the privilege, `message` will be said if given. If it is
+    a private message, no checking will be done."""
+    def actual_decorator(function):
+        @functools.wraps(function)
+        def guarded(bot, trigger, *args, **kwargs):
+            channel_privs = bot.privileges[trigger.sender]
+            allowed = channel_privs.get(trigger.nick, 0) >= level
+            if not trigger.is_privmsg and not allowed:
+                if message:
+                    bot.say(message)
+            else:
+                return function(bot, trigger, *args, **kwargs)
+        return guarded
+    return actual_decorator
+
+
+def require_admin(message=None):
+    """Decorator. Require the user triggering the message to be a bot admin.
+
+    If they are not, `message` will be said if given."""
+    def actual_decorator(function):
+        @functools.wraps(function)
+        def guarded(bot, trigger, *args, **kwargs):
+            if not trigger.admin:
+                if message:
+                    bot.say(message)
+            else:
+                return function(bot, trigger, *args, **kwargs)
+        return guarded
+    # Hack to allow decorator without parens
+    if callable(message):
+        return actual_decorator(message)
+    return actual_decorator
+
+
+def require_owner(message=None):
+    """Decorator. Require the user triggering the message to be the bot owner.
+
+    If they are not, `message` will be said if given."""
+    def actual_decorator(function):
+        @functools.wraps(function)
+        def guarded(bot, trigger, *args, **kwargs):
+            if not trigger.owner:
+                if message:
+                    bot.say(message)
+            else:
+                return function(bot, trigger, *args, **kwargs)
+        return guarded
+    # Hack to allow decorator without parens
+    if callable(message):
+        return actual_decorator(message)
+    return actual_decorator
 
 
 class example(object):
-
     """Decorator. Add an example.
 
     Add an example attribute into a function and generate a test.

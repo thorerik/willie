@@ -39,7 +39,6 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import absolute_import
 
-import willie.db as db
 from willie.tools import iteritems
 import os
 import sys
@@ -319,10 +318,6 @@ class Config(object):
             ' When done, hit enter again.'
         self.add_list('core', 'channels', c, 'Channel:')
 
-    def _db(self):
-        db.configure(self)
-        self.save()
-
     def _modules(self):
         home = os.getcwd()
         modules_dir = os.path.join(home, 'modules')
@@ -360,8 +355,8 @@ class Config(object):
         modules = {}
 
         # First, add modules from the regular modules directory
-        this_dir = os.path.dirname(os.path.abspath(__file__))
-        modules_dir = os.path.join(this_dir, 'modules')
+        main_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        modules_dir = os.path.join(main_dir, 'modules')
         for fn in os.listdir(modules_dir):
             if fn.endswith('.py') and not fn.startswith('_'):
                 modules[fn[:-3]] = os.path.join(modules_dir, fn)
@@ -412,14 +407,6 @@ def wizard(section, config=None):
     configpath = os.path.join(dotdir, (config or 'default') + '.cfg')
     if section == 'all':
         create_config(configpath)
-    elif section == 'db':
-        check_dir(False)
-        if not os.path.isfile(configpath):
-            print("No config file found." +
-                  " Please make one before configuring these options.")
-            sys.exit(1)
-        config = Config(configpath, True)
-        config._db()
     elif section == 'mod':
         check_dir(False)
         if not os.path.isfile(configpath):
@@ -454,8 +441,6 @@ def create_config(configpath):
     try:
         config = Config(configpath, os.path.isfile(configpath))
         config._core()
-        if config.option("Would you like to set up a settings database now"):
-            config._db()
         if config.option(
             'Would you like to see if there are any modules'
             ' that need configuring'

@@ -25,50 +25,29 @@ import asynchat
 import os
 import codecs
 import traceback
-from willie.tools import stderr, Nick
+from willie.logger import get_logger
+from willie.tools import stderr, Identifier
+from willie.trigger import PreTrigger, Trigger
 try:
     import select
     import ssl
-    has_ssl = True
-except ImportError:
-    # no SSL support
-    has_ssl = False
-if has_ssl:
     if not hasattr(ssl, 'match_hostname'):
         # Attempt to import ssl_match_hostname from python-backports
         import backports.ssl_match_hostname
         ssl.match_hostname = backports.ssl_match_hostname.match_hostname
         ssl.CertificateError = backports.ssl_match_hostname.CertificateError
+    has_ssl = True
+except ImportError:
+    # no SSL support
+    has_ssl = False
+
 import errno
 import threading
 from datetime import datetime
 if sys.version_info.major >= 3:
     unicode = str
 
-
-class Origin(object):
-    source = re.compile(r'([^!]*)!?([^@]*)@?(.*)')
-
-    def __init__(self, bot, source, args, tags):
-        self.hostmask = source
-        self.tags = tags
-
-        # Split out the nick, user, and host from hostmask per the regex above.
-        match = Origin.source.match(source or '')
-        self.nick, self.user, self.host = match.groups()
-        self.nick = Nick(self.nick)
-
-        # If we have more than one argument, the second one is the sender
-        if len(args) > 1:
-            target = Nick(args[1])
-        else:
-            target = None
-
-        # Unless we're messaging the bot directly, in which case that second
-        # arg will be our bot's name.
-        if target and target.lower() == bot.nick.lower():
-            target = self.nick
-        self.sender = target
+LOGGER = get_logger(__name__)
 
 
 class Bot(asynchat.async_chat):
@@ -89,8 +68,8 @@ class Bot(asynchat.async_chat):
         self.set_terminator(b'\n')
         self.buffer = ''
 
-        self.nick = Nick(config.nick)
-        """Willie's current ``Nick``. Changing this while Willie is running is
+        self.nick = Identifier(config.nick)
+        """Willie's current ``Identifier``. Changing this while Willie is running is
         untested."""
         self.user = config.user
         """Willie's user/ident."""
@@ -113,16 +92,16 @@ class Bot(asynchat.async_chat):
         # These lists are filled in startup.py, as of right now.
         self.ops = dict()
         """
-        A dictionary mapping channels to a ``Nick`` list of their operators.
+        A dictionary mapping channels to a ``Identifier`` list of their operators.
         """
         self.halfplus = dict()
         """
-        A dictionary mapping channels to a ``Nick`` list of their half-ops and
+        A dictionary mapping channels to a ``Identifier`` list of their half-ops and
         ops.
         """
         self.voices = dict()
         """
-        A dictionary mapping channels to a ``Nick`` list of their voices,
+        A dictionary mapping channels to a ``Identifier`` list of their voices,
         half-ops and ops.
         """
 
@@ -399,47 +378,22 @@ class Bot(asynchat.async_chat):
         if line.endswith('\r'):
             line = line[:-1]
         self.buffer = ''
-        self.raw = line
-
-        # Break off IRCv3 message tags, if present
-        tags = {}
-        if line.startswith('@'):
-            tagstring, line = line.split(' ', 1)
-            for tag in tagstring[1:].split(';'):
-                tag = tag.split('=', 1)
-                if len(tag) > 1:
-                    tags[tag[0]] = tag[1]
-                else:
-                    tags[tag[0]] = None
-
-        if line.startswith(':'):
-            source, line = line[1:].split(' ', 1)
-        else:
-            source = None
-
-        if ' :' in line:
-            argstr, text = line.split(' :', 1)
-            args = argstr.split(' ')
-            args.append(text)
-        else:
-            args = line.split(' ')
-            text = args[-1]
-
         self.last_ping_time = datetime.now()
-        if args[0] == 'PING':
-            self.write(('PONG', text))
-        elif args[0] == 'ERROR':
-            self.debug(__file__, text, 'always')
+        pretrigger = PreTrigger(self.nick, line)
+
+        if pretrigger.event == 'PING':
+            self.write(('PONG', pretrigger.args[-1]))
+        elif pretrigger.event == 'ERROR':
+            LOGGER.error("ERROR recieved from server: %s", pretrigger.args[-1])
             if self.hasquit:
                 self.close_when_done()
-        elif args[0] == '433':
+        elif pretrigger.event == '433':
             stderr('Nickname already in use!')
             self.handle_close()
 
-        origin = Origin(self, source, args, tags)
-        self.dispatch(origin, text, args)
+        self.dispatch(pretrigger)
 
-    def dispatch(self, origin, text, args):
+    def dispatch(self, pretrigger):
         pass
 
     def msg(self, recipient, text, max_messages=1):
@@ -470,7 +424,7 @@ class Bot(asynchat.async_chat):
             # No messages within the last 3 seconds? Go ahead!
             # Otherwise, wait so it's been at least 0.8 seconds + penalty
 
-            recipient_id = Nick(recipient)
+            recipient_id = Identifier(recipient)
 
             if recipient_id not in self.stack:
                 self.stack[recipient_id] = []
@@ -511,7 +465,7 @@ class Bot(asynchat.async_chat):
         """
         self.write(('NOTICE', dest), text)
 
-    def error(self, origin=None, trigger=None):
+    def error(self, trigger=None):
         """Called internally when a module causes an error."""
         try:
             trace = traceback.format_exc()
@@ -534,24 +488,23 @@ class Bot(asynchat.async_chat):
                 log_filename = os.path.join(self.config.logdir, 'exceptions.log')
                 with codecs.open(log_filename, 'a', encoding='utf-8') as logfile:
                     logfile.write('Signature: %s\n' % signature)
-                    if origin:
-                        logfile.write('from %s at %s:\n' % (origin.sender, str(datetime.now())))
                     if trigger:
-                        logfile.write('Message was: <%s> %s\n' % (trigger.nick, trigger.group(0)))
+                        logfile.write('from {} at {}. Message was: {}\n'.format(
+                            trigger.nick, str(datetime.now()), trigger.group(0)))
                     logfile.write(trace)
                     logfile.write(
                         '----------------------------------------\n\n'
                     )
             except Exception as e:
                 stderr("Could not save full traceback!")
-                self.debug(__file__, "(From: " + origin.sender + "), can't save traceback: " + str(e), 'always')
+                LOGGER.error("Could not save traceback from %s to file: %s", trigger.sender, str(e))
 
-            if origin:
-                self.msg(origin.sender, signature)
+            if trigger:
+                self.msg(trigger.sender, signature)
         except Exception as e:
-            if origin:
-                self.msg(origin.sender, "Got an error.")
-                self.debug(__file__, "(From: " + origin.sender + ") " + str(e), 'always')
+            if trigger:
+                self.msg(trigger.sender, "Got an error.")
+                LOGGER.error("Exception from %s: %s", trigger.sender, str(e))
 
     def handle_error(self):
         """Handle any uncaptured error in the core.
@@ -561,11 +514,7 @@ class Bot(asynchat.async_chat):
         """
         trace = traceback.format_exc()
         stderr(trace)
-        self.debug(
-            __file__,
-            'Fatal error in core, please review exception log',
-            'always'
-        )
+        LOGGER.error('Fatal error in core, please review exception log')
         # TODO: make not hardcoded
         logfile = codecs.open(
             os.path.join(self.config.logdir, 'exceptions.log'),
@@ -589,35 +538,35 @@ class Bot(asynchat.async_chat):
             os._exit(1)
 
     # Helper functions to maintain the oper list.
-    # They cast to Nick when adding to be quite sure there aren't any accidental
+    # They cast to Identifier when adding to be quite sure there aren't any accidental
     # string nicks. On deletion, you know you'll never need to worry about what
     # the real superclass is, so we just cast and remove.
     def add_op(self, channel, name):
-        if isinstance(name, Nick):
+        if isinstance(name, Identifier):
             self.ops[channel].add(name)
         else:
-            self.ops[channel].add(Nick(name))
+            self.ops[channel].add(Identifier(name))
 
     def add_halfop(self, channel, name):
-        if isinstance(name, Nick):
+        if isinstance(name, Identifier):
             self.halfplus[channel].add(name)
         else:
-            self.halfplus[channel].add(Nick(name))
+            self.halfplus[channel].add(Identifier(name))
 
     def add_voice(self, channel, name):
-        if isinstance(name, Nick):
+        if isinstance(name, Identifier):
             self.voices[channel].add(name)
         else:
-            self.voices[channel].add(Nick(name))
+            self.voices[channel].add(Identifier(name))
 
     def del_op(self, channel, name):
-        self.ops[channel].discard(Nick(name))
+        self.ops[channel].discard(Identifier(name))
 
     def del_halfop(self, channel, name):
-        self.halfplus[channel].discard(Nick(name))
+        self.halfplus[channel].discard(Identifier(name))
 
     def del_voice(self, channel, name):
-        self.voices[channel].discard(Nick(name))
+        self.voices[channel].discard(Identifier(name))
 
     def flush_ops(self, channel):
         self.ops[channel] = set()

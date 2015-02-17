@@ -19,12 +19,13 @@ import threading
 import traceback
 import signal
 
-__version__ = '4.5.1-git'
+__version__ = '5.0.0-git'
 
 
 def run(config):
     import willie.bot as bot
     import willie.web as web
+    import willie.logger
     from willie.tools import stderr
     if config.core.delay is not None:
         delay = config.core.delay
@@ -51,6 +52,7 @@ def run(config):
                 signal.signal(signal.SIGUSR1, signal_handler)
             if hasattr(signal, 'SIGTERM'):
                 signal.signal(signal.SIGTERM, signal_handler)
+            willie.logger.setup_logging(p)
             p.run(config.core.host, int(config.core.port))
         except KeyboardInterrupt:
             break

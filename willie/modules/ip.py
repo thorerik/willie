@@ -28,6 +28,9 @@ except ImportError:
         pass
 
 from willie.module import commands, example
+from willie.logger import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 def configure(config):
@@ -62,7 +65,9 @@ def _find_geoip_db(bot):
         if os.path.isfile(cities_db) and os.path.isfile(ipasnum_db):
             return config.ip.GeoIP_db_path
         else:
-            bot.debug(__file__, 'GeoIP path configured but DB not found in configured path', 'warning')
+            LOGGER.warning(
+                'GeoIP path configured but DB not found in configured path'
+            )
     if (os.path.isfile(os.path.join(bot.config.homedir, 'GeoLiteCity.dat')) and
             os.path.isfile(os.path.join(bot.config.homedir, 'GeoIPASNum.dat'))):
         return bot.config.homedir
@@ -70,7 +75,7 @@ def _find_geoip_db(bot):
             os.path.isfile(os.path.join('/usr/share/GeoIP', 'GeoIPASNum.dat'))):
         return '/usr/share/GeoIP'
     elif urlretrieve:
-        bot.debug(__file__, 'Downloading GeoIP database', 'always')
+        LOGGER.warning('Downloading GeoIP database')
         bot.say('Downloading GeoIP database, please wait...')
         geolite_city_url = 'http://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz'
         geolite_ASN_url = 'http://download.maxmind.com/download/geoip/database/asnum/GeoIPASNum.dat.gz'
@@ -87,7 +92,7 @@ def _find_geoip_db(bot):
 
 @commands('iplookup', 'ip')
 @example('.ip 8.8.8.8',
-         r'[IP/Host Lookup] Hostname: google-public-dns-a.google.com | Location: United States | Region: CA | ISP: Google Inc.',
+         r'[IP/Host Lookup] Hostname: google-public-dns-a.google.com | Location: United States | Region: CA | ISP: AS15169 Google Inc.',
          re=True,
          ignore='Downloading GeoIP database, please wait...')
 def ip(bot, trigger):
@@ -97,7 +102,7 @@ def ip(bot, trigger):
     query = trigger.group(2)
     db_path = _find_geoip_db(bot)
     if db_path is False:
-        bot.debug(__file__, 'Can\'t find (or download) usable GeoIP database', 'always')
+        LOGGER.error('Can\'t find (or download) usable GeoIP database')
         bot.say('Sorry, I don\'t have a GeoIP database to use for this lookup')
         return False
     geolite_city_filepath = os.path.join(_find_geoip_db(bot), 'GeoLiteCity.dat')
@@ -106,7 +111,10 @@ def ip(bot, trigger):
     gi_org = pygeoip.GeoIP(geolite_ASN_filepath)
     host = socket.getfqdn(query)
     response = "[IP/Host Lookup] Hostname: %s" % host
-    response += " | Location: %s" % gi_city.country_name_by_name(query)
+    try:
+        response += " | Location: %s" % gi_city.country_name_by_name(query)
+    except AttributeError:
+        response += ' | Location: Unknown'
 
     region_data = gi_city.region_by_name(query)
     try:
@@ -117,8 +125,6 @@ def ip(bot, trigger):
         response += " | Region: %s" % region
 
     isp = gi_org.org_by_name(query)
-    if isp is not None:
-        isp = re.sub('^AS\d+ ', '', isp)
     response += " | ISP: %s" % isp
     bot.say(response)
 

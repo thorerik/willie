@@ -10,19 +10,28 @@ http://willie.dftba.net
 from __future__ import unicode_literals
 import os
 import os.path
+import re
 import threading
 import sys
 from datetime import datetime
+try:
+    from pytz import timezone
+    from pytz import all_timezones
+    import pytz
+except ImportError:
+    pytz = None
 import willie.module
 import willie.tools
 from willie.config import ConfigurationError
 
-MESSAGE_TPL = "{datetime}  <{origin.nick}> {message}"
-ACTION_TPL = "{datetime}  * {origin.nick} {message}"
-NICK_TPL = "{datetime}  *** {origin.nick} is now known as {origin.sender}"
-JOIN_TPL = "{datetime}  *** {origin.nick} has joined {trigger}"
-PART_TPL = "{datetime}  *** {origin.nick} has left {trigger}"
-QUIT_TPL = "{datetime}  *** {origin.nick} has quit IRC"
+MESSAGE_TPL = "{datetime}  <{trigger.nick}> {message}"
+ACTION_TPL = "{datetime}  * {trigger.nick} {message}"
+NICK_TPL = "{datetime}  *** {trigger.nick} is now known as {trigger.sender}"
+JOIN_TPL = "{datetime}  *** {trigger.nick} has joined {trigger}"
+PART_TPL = "{datetime}  *** {trigger.nick} has left {trigger}"
+QUIT_TPL = "{datetime}  *** {trigger.nick} has quit IRC"
+# According to Wikipedia
+BAD_CHARS = re.compile(r'[\/?%*:|"<>. ]')
 
 
 def configure(config):
@@ -36,22 +45,36 @@ def configure(config):
         config.add_option("chanlogs", "by_day", "Split log files by day", default=True)
         config.add_option("chanlogs", "privmsg", "Record private messages", default=False)
         config.add_option("chanlogs", "microseconds", "Microsecond precision", default=False)
+        config.add_option("chanlogs", "localtime", "Attempt to use preferred timezone", default=False)
         # could ask if user wants to customize message templates,
         # but that seems unnecessary
 
 
-def get_fpath(bot, channel=None):
+def get_datetime(bot):
+    """
+    Returns a datetime object of the current time.
+    """
+    dt = datetime.utcnow()
+    if pytz:
+        dt = dt.replace(tzinfo=timezone('UTC'))
+        if bot.config.chanlogs.localtime:
+            dt = dt.astimezone(timezone(bot.config.clock.tz))
+    if not bot.config.chanlogs.microseconds:
+        dt = dt.replace(microsecond=0)
+    return dt
+
+
+def get_fpath(bot, trigger, channel=None):
     """
     Returns a string corresponding to the path to the file where the message
     currently being handled should be logged.
     """
     basedir = os.path.expanduser(bot.config.chanlogs.dir)
-    channel = channel or bot.origin.sender
+    channel = channel or trigger.sender
     channel = channel.lstrip("#")
+    channel = BAD_CHARS.sub('__')
 
-    dt = datetime.utcnow()
-    if not bot.config.chanlogs.microseconds:
-        dt = dt.replace(microsecond=0)
+    dt = get_datetime(bot)
     if bot.config.chanlogs.by_day:
         fname = "{channel}-{date}.log".format(channel=channel, date=dt.date().isoformat())
     else:
@@ -59,13 +82,11 @@ def get_fpath(bot, channel=None):
     return os.path.join(basedir, fname)
 
 
-def _format_template(tpl, bot, **kwargs):
-    dt = datetime.utcnow()
-    if not bot.config.chanlogs.microseconds:
-        dt = dt.replace(microsecond=0)
+def _format_template(tpl, bot, trigger, **kwargs):
+    dt = get_datetime(bot)
 
     formatted = tpl.format(
-        origin=bot.origin, datetime=dt.isoformat(),
+        trigger=trigger, datetime=dt.isoformat(),
         date=dt.date().isoformat(), time=dt.time().isoformat(),
         **kwargs
     ) + "\n"
@@ -107,8 +128,8 @@ def log_message(bot, message):
     else:
         tpl = bot.config.chanlogs.message_template or MESSAGE_TPL
 
-    logline = _format_template(tpl, bot, message=message)
-    fpath = get_fpath(bot)
+    logline = _format_template(tpl, bot, message, message=message)
+    fpath = get_fpath(bot, message)
     with bot.memory['chanlog_locks'][fpath]:
         with open(fpath, "a") as f:
             f.write(logline)
@@ -119,8 +140,8 @@ def log_message(bot, message):
 @willie.module.unblockable
 def log_join(bot, trigger):
     tpl = bot.config.chanlogs.join_template or JOIN_TPL
-    logline = _format_template(tpl, bot, trigger=trigger)
-    fpath = get_fpath(bot, channel=trigger.sender)
+    logline = _format_template(tpl, bot, trigger)
+    fpath = get_fpath(bot, trigger, channel=trigger.sender)
     with bot.memory['chanlog_locks'][fpath]:
         with open(fpath, "a") as f:
             f.write(logline)
@@ -132,7 +153,7 @@ def log_join(bot, trigger):
 def log_part(bot, trigger):
     tpl = bot.config.chanlogs.part_template or PART_TPL
     logline = _format_template(tpl, bot, trigger=trigger)
-    fpath = get_fpath(bot, channel=trigger.sender)
+    fpath = get_fpath(bot, trigger, channel=trigger.sender)
     with bot.memory['chanlog_locks'][fpath]:
         with open(fpath, "a") as f:
             f.write(logline)
@@ -145,13 +166,13 @@ def log_part(bot, trigger):
 @willie.module.priority('high')
 def log_quit(bot, trigger):
     tpl = bot.config.chanlogs.quit_template or QUIT_TPL
-    logline = _format_template(tpl, bot, trigger=trigger)
+    logline = _format_template(tpl, bot, trigger)
     # make a copy of bot.privileges that we can safely iterate over
     privcopy = list(bot.privileges.items())
     # write logline to *all* channels that the user was present in
     for channel, privileges in privcopy:
-        if bot.origin.nick in privileges:
-            fpath = get_fpath(bot, channel)
+        if trigger.nick in privileges:
+            fpath = get_fpath(bot, trigger, channel)
             with bot.memory['chanlog_locks'][fpath]:
                 with open(fpath, "a") as f:
                     f.write(logline)
@@ -162,15 +183,15 @@ def log_quit(bot, trigger):
 @willie.module.unblockable
 def log_nick_change(bot, trigger):
     tpl = bot.config.chanlogs.nick_template or NICK_TPL
-    logline = _format_template(tpl, bot, trigger=trigger)
-    old_nick = bot.origin.nick
-    new_nick = bot.origin.sender
+    logline = _format_template(tpl, bot, trigger)
+    old_nick = trigger.nick
+    new_nick = trigger.sender
     # make a copy of bot.privileges that we can safely iterate over
     privcopy = list(bot.privileges.items())
     # write logline to *all* channels that the user is present in
     for channel, privileges in privcopy:
         if old_nick in privileges or new_nick in privileges:
-            fpath = get_fpath(bot, channel)
+            fpath = get_fpath(bot, trigger, channel)
             with bot.memory['chanlog_locks'][fpath]:
                 with open(fpath, "a") as f:
                     f.write(logline)

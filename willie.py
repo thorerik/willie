@@ -25,7 +25,7 @@ import os
 import argparse
 import signal
 
-from willie.__init__ import run
+from willie.__init__ import run, __version__
 from willie.config import Config, create_config, ConfigurationError, wizard
 import willie.tools as tools
 import willie.web
@@ -87,28 +87,34 @@ def main(argv=None):
                             dest='mod_wizard', help=(
                                 'Run the configuration wizard, but only for the '
                                 'module configuration options.'))
-        parser.add_argument('--configure-database', action='store_true',
-                            dest='db_wizard', help=(
-                                'Run the configuration wizard, but only for the '
-                                'database configuration options.'))
+        parser.add_argument('-v', '--version', action="store_true",
+                            dest="version", help="Show version number and exit")
         opts = parser.parse_args()
 
+        # Step Two: "Do not run as root" checks.
         try:
+            # Linux/Mac
             if os.getuid() == 0 or os.geteuid() == 0:
                 stderr('Error: Do not run Willie with root privileges.')
                 sys.exit(1)
         except AttributeError:
-            # Windows don't have os.getuid/os.geteuid
-            pass
+            # Windows
+            if os.environ.get("USERNAME") == "Administrator":
+                stderr('Error: Do not run Willie as Administrator.')
+                sys.exit(1)
 
-        if opts.wizard:
+        if opts.version:
+            py_ver = '%s.%s.%s' % (sys.version_info.major,
+                                   sys.version_info.minor,
+                                   sys.version_info.micro)
+            print('Willie %s (running on python %s)' % (__version__, py_ver))
+            print('http://willie.dftba.net/')
+            return
+        elif opts.wizard:
             wizard('all', opts.config)
             return
         elif opts.mod_wizard:
             wizard('mod', opts.config)
-            return
-        elif opts.db_wizard:
-            wizard('db', opts.config)
             return
 
         if opts.list_configs:
@@ -161,7 +167,7 @@ def main(argv=None):
         sys.stderr = tools.OutputRedirect(logfile, True, opts.quiet)
         sys.stdout = tools.OutputRedirect(logfile, False, opts.quiet)
 
-        #Handle --quit, --kill and saving the PID to file
+        # Handle --quit, --kill and saving the PID to file
         pid_dir = config_module.core.pid_dir or homedir
         if opts.config is None:
             pid_file_path = os.path.join(pid_dir, 'willie.pid')
@@ -171,10 +177,12 @@ def main(argv=None):
                 basename = basename[:-4]
             pid_file_path = os.path.join(pid_dir, 'willie-%s.pid' % basename)
         if os.path.isfile(pid_file_path):
-            pid_file = open(pid_file_path, 'r')
-            old_pid = int(pid_file.read())
-            pid_file.close()
-            if tools.check_pid(old_pid):
+            with open(pid_file_path, 'r') as pid_file:
+                try:
+                    old_pid = int(pid_file.read())
+                except ValueError:
+                    old_pid = None
+            if old_pid is not None and tools.check_pid(old_pid):
                 if not opts.quit and not opts.kill:
                     stderr('There\'s already a Willie instance running with this config file')
                     stderr('Try using the --quit or the --kill options')
@@ -200,9 +208,8 @@ def main(argv=None):
             child_pid = os.fork()
             if child_pid is not 0:
                 sys.exit()
-        pid_file = open(pid_file_path, 'w')
-        pid_file.write(str(os.getpid()))
-        pid_file.close()
+        with open(pid_file_path, 'w') as pid_file:
+            pid_file.write(str(os.getpid()))
         config_module.pid_file_path = pid_file_path
 
         # Step Five: Initialise And Run willie

@@ -75,7 +75,7 @@ def setup(bot=None):
     else:
         exclude = bot.memory['url_exclude']
         if regexes:
-            exclude.append(regexes)
+            exclude.extend(regexes)
         bot.memory['url_exclude'] = exclude
 
     # Ensure that url_callbacks and last_seen_url are in memory
@@ -156,7 +156,7 @@ def process_urls(bot, trigger, urls):
         if not url.startswith(exclusion_char):
             # Magic stuff to account for international domain names
             try:
-                url = willie.web.iri_to_uri(url)
+                url = web.iri_to_uri(url)
             except:
                 pass
             # First, check that the URL we got doesn't match
