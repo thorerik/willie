@@ -1,10 +1,10 @@
 # coding=utf8
 
-
 from __future__ import unicode_literals
 from willie.module import commands
 import urllib
 import urllib2
+
 
 @commands('request')
 def request(bot, trigger):
